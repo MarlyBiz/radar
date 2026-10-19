@@ -1,7 +1,7 @@
 {
   "id": "./",
-  "name": "Radar",
-  "short_name": "Radar",
+  "name": "SkyVista",
+  "short_name": "SkyVista",
   "description": "Personal weather radar Progressive Web App.",
   "theme_color": "#0b1220",
   "background_color": "#0b1220",
