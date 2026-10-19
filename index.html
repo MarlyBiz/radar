@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <title>Radar</title>
+    <meta name="description" content="Installable personal weather radar Progressive Web App with live radar playback, geocoding search, and current conditions." />
+    <meta property="og:title" content="Radar" />
+    <meta property="og:description" content="Installable personal weather radar Progressive Web App with live radar playback, geocoding search, and current conditions." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+
+    <!-- PWA & Android Status Bar Configuration -->
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <meta name="theme-color" content="#0b1220" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Radar" />
+    <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
+    <link rel="icon" type="image/svg+xml" href="./icon.svg" />
+    <link rel="alternate icon" href="./favicon.ico" />
+
+    <!-- Theme initialization before first paint (no flash, follows device if no saved manual choice) -->
+    <script>
+      (function() {
+        try {
+          var saved = localStorage.getItem('radar.theme');
+          var isDark = true;
+          if (saved === 'light') {
+            isDark = false;
+          } else if (saved === 'dark') {
+            isDark = true;
+          } else if (typeof window !== 'undefined' && window.matchMedia) {
+            isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+          }
+          var root = document.documentElement;
+          var themeColor = isDark ? '#0b1220' : '#f5f7fa';
+          if (isDark) {
+            root.classList.remove('light');
+            root.classList.add('dark');
+            root.setAttribute('data-theme', 'dark');
+            root.style.backgroundColor = '#0b1220';
+            root.style.color = '#ffffff';
+          } else {
+            root.classList.remove('dark');
+            root.classList.add('light');
+            root.setAttribute('data-theme', 'light');
+            root.style.backgroundColor = '#f5f7fa';
+            root.style.color = '#1a1a2e';
+          }
+          var metaTheme = document.querySelector('meta[name="theme-color"]');
+          if (metaTheme) {
+            metaTheme.setAttribute('content', themeColor);
+          }
+        } catch (e) {}
+      })();
+    </script>
+    <script type="module" crossorigin src="./assets/index-CzeP0JTw.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-BCgucQXG.css">
+  </head>
+  <body class="overflow-hidden select-none touch-manipulation m-0 p-0 h-full w-full">
+    <div id="root"></div>
+  </body>
+</html>
+
