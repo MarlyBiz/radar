@@ -4,7 +4,7 @@
  * Note: iOS Safari (iOS 16.4+) requires the PWA to be installed (Added to Home Screen) to receive Web Notifications.
  */
 
-const CACHE_VERSION = 'radar-shell-v20261019-notify';
+const CACHE_VERSION = 'radar-shell-v20261019-welcome';
 const TILE_CACHE_NAME = 'radar-tiles-v1';
 
 // All paths are resolved against the SW scope, so the app works under a sub-path
@@ -110,7 +110,7 @@ self.addEventListener('push', (event) => {
   // type 'live': silent hourly update that quietly replaces the previous one (own tag, so the
   // audible morning/second notifications, tagged daily-morning / daily-second, never replace it)
   const live = msg.type === 'live';
-  event.waitUntil(self.registration.showNotification(msg.title || 'Heaven & Earth', {
+  event.waitUntil(self.registration.showNotification(msg.title || 'Heaven on Earth', {
     body: msg.body || '',
     tag: live ? 'heaven-live' : (msg.tag && msg.tag !== 'heaven-live' ? msg.tag : 'daily'),
     renotify: false,
