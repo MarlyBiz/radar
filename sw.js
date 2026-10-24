@@ -4,7 +4,7 @@
  * Note: iOS Safari (iOS 16.4+) requires the PWA to be installed (Added to Home Screen) to receive Web Notifications.
  */
 
-const CACHE_VERSION = 'radar-shell-v20261023-sky8';
+const CACHE_VERSION = 'radar-shell-v20261023-sky9';
 const TILE_CACHE_NAME = 'radar-tiles-v1';
 
 // All paths are resolved against the SW scope, so the app works under a sub-path
