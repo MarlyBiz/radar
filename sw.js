@@ -4,8 +4,9 @@
  * Note: iOS Safari (iOS 16.4+) requires the PWA to be installed (Added to Home Screen) to receive Web Notifications.
  */
 
-const CACHE_VERSION = 'radar-shell-v20261023-sky10';
+const CACHE_VERSION = 'radar-shell-v20261024-sky11';
 const TILE_CACHE_NAME = 'radar-tiles-v1';
+const WIKI_CACHE_NAME = 'sky-wiki-v1'; // Star View detail sheet: Wikipedia articles (offline reopen)
 
 // All paths are resolved against the SW scope, so the app works under a sub-path
 // (https://marlybiz.github.io/radar/) and on a custom domain root alike.
@@ -76,7 +77,7 @@ self.addEventListener('activate', (event) => {
     caches.keys().then((keys) => {
       return Promise.all(
         keys.map((key) => {
-          if (key !== CACHE_VERSION && key !== TILE_CACHE_NAME) {
+          if (key !== CACHE_VERSION && key !== TILE_CACHE_NAME && key !== WIKI_CACHE_NAME) {
             console.log('[SW] Pruning old cache version:', key);
             return caches.delete(key);
           }
@@ -244,6 +245,21 @@ self.addEventListener('fetch', (event) => {
           return cachedResponse || fetchPromise;
         });
       })
+    );
+    return;
+  }
+
+  // C2. Wikipedia (Star View detail sheet): stale-while-revalidate so reopened articles work offline
+  if (url.hostname === 'en.wikipedia.org') {
+    event.respondWith(
+      caches.open(WIKI_CACHE_NAME).then((cache) =>
+        cache.match(request).then((cached) => {
+          const net = fetch(request)
+            .then((res) => { if (res && res.status === 200) cache.put(request, res.clone()); return res; })
+            .catch(() => cached || Response.error());
+          return cached || net;
+        })
+      )
     );
     return;
   }
