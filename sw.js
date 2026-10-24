@@ -4,7 +4,7 @@
  * Note: iOS Safari (iOS 16.4+) requires the PWA to be installed (Added to Home Screen) to receive Web Notifications.
  */
 
-const CACHE_VERSION = 'radar-shell-v20261024-sky15';
+const CACHE_VERSION = 'radar-shell-v20261024-sky16';
 const TILE_CACHE_NAME = 'radar-tiles-v1';
 const WIKI_CACHE_NAME = 'sky-wiki-v1'; // Star View detail sheet: Wikipedia articles (offline reopen)
 
