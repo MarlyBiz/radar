@@ -4,9 +4,14 @@
  * Note: iOS Safari (iOS 16.4+) requires the PWA to be installed (Added to Home Screen) to receive Web Notifications.
  */
 
-const CACHE_VERSION = 'radar-shell-v20261026-sky21';
+const CACHE_VERSION = 'radar-shell-v20261026-sky22';
 const TILE_CACHE_NAME = 'radar-tiles-v1';
-const WIKI_CACHE_NAME = 'sky-wiki-v1'; // Star View detail sheet: Wikipedia articles (offline reopen)
+const WIKI_CACHE_NAME = 'sky-wiki-v1';
+// sky22: one persistent on-phone cache for map/satellite/model tiles, ~25 MB cap, oldest out first.
+// Per-entry time/size/class live in IndexedDB (opaque tile responses can't carry headers).
+const DATA_CACHE = 'heaven-data-v1';
+const CAP_BYTES = 25 * 1024 * 1024;
+const TTL = { base: 30 * 86400e3, frame: 3 * 3600e3, model: 12 * 3600e3, meta: 6 * 3600e3 }; // Star View detail sheet: Wikipedia articles (offline reopen)
 
 // All paths are resolved against the SW scope, so the app works under a sub-path
 // (https://marlybiz.github.io/radar/) and on a custom domain root alike.
@@ -77,7 +82,7 @@ self.addEventListener('activate', (event) => {
     caches.keys().then((keys) => {
       return Promise.all(
         keys.map((key) => {
-          if (key !== CACHE_VERSION && key !== TILE_CACHE_NAME && key !== WIKI_CACHE_NAME) {
+          if (key !== CACHE_VERSION && key !== WIKI_CACHE_NAME && key !== DATA_CACHE) { // radar-tiles-v1 (unbounded) retired
             console.log('[SW] Pruning old cache version:', key);
             return caches.delete(key);
           }
@@ -87,6 +92,7 @@ self.addEventListener('activate', (event) => {
   );
   // Take control of uncontrolled clients immediately
   self.clients.claim();
+  event.waitUntil(prune().then(warmBaseTiles).catch(() => {}));
 });
 
 // 3. Message Handling: Explicit skipWaiting & notification triggers
@@ -227,25 +233,10 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // C. Map & Radar Tiles (RainViewer, OpenStreetMap):
-  // Stale-While-Revalidate in dedicated tile cache for fast response & offline map view.
-  if (url.origin.includes('rainviewer.com') || url.origin.includes('openstreetmap.org')) {
-    event.respondWith(
-      caches.open(TILE_CACHE_NAME).then((cache) => {
-        return cache.match(request).then((cachedResponse) => {
-          const fetchPromise = fetch(request)
-            .then((networkResponse) => {
-              if (networkResponse && networkResponse.status === 200) {
-                cache.put(request, networkResponse.clone());
-              }
-              return networkResponse;
-            })
-            .catch(() => cachedResponse);
-
-          return cachedResponse || fetchPromise;
-        });
-      })
-    );
+  // C. sky22: map / globe / satellite / model data saved on the phone (see classify)
+  const cls = classify(url);
+  if (cls) {
+    event.respondWith(cached(request, url, cls));
     return;
   }
 
@@ -283,3 +274,83 @@ self.addEventListener('fetch', (event) => {
     fetch(request).catch(() => caches.match(request))
   );
 });
+
+// ---------- sky22: persistent tile + data cache ----------
+// base: basemap + label tiles + Black Marble (static)      -> stale-while-revalidate, kept 30 days
+// frame: time-stamped radar / satellite frames (immutable)  -> cache-first, kept 3 h
+// model: GFS images keyed by run (immutable)               -> cache-first, kept 12 h
+// meta: GFS meta.json (query ignored)                      -> saved copy first, refreshed in the background
+function classify(u) {
+  const h = u.hostname, p = u.pathname;
+  if (h.endsWith('tile.openstreetmap.org') || (h === 'server.arcgisonline.com' && p.includes('/tile/'))) return 'base';
+  if (h === 'gibs.earthdata.nasa.gov' && p.includes('VIIRS_Black_Marble')) return 'base';
+  if (h === 'marlybiz.github.io' && p.startsWith('/heaven-gfs/')) return p.endsWith('meta.json') ? 'meta' : 'model';
+  if (h.endsWith('rainviewer.com') && p.includes('/v2/radar/')) return 'frame';
+  if (h === 'push.marlylabs.app' && p.startsWith('/radar/')) return 'frame';
+  if (h === 'gibs.earthdata.nasa.gov' && /\/\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\//.test(p)) return 'frame';
+  if ((h === 'nowcoast.noaa.gov' || h === 'view.eumetsat.int') && /request=GetMap/i.test(u.search) && /time=/i.test(u.search)) return 'frame';
+  return null;
+}
+const keyOf = (u, cls) => (cls === 'meta' ? u.origin + u.pathname : u.href);
+let dbP = null;
+function db() {
+  if (!dbP) dbP = new Promise((res, rej) => { const r = indexedDB.open('heaven-sw', 1); r.onupgradeneeded = () => r.result.createObjectStore('meta'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+  return dbP;
+}
+const idb = (mode, fn) => db().then((d) => new Promise((res, rej) => { const tx = d.transaction('meta', mode); const st = tx.objectStore('meta'); const out = fn(st); tx.oncomplete = () => res(out && out.result !== undefined ? out.result : out); tx.onerror = () => rej(tx.error); }));
+let puts = 0;
+async function save(cache, key, res, cls) {
+  const len = +(res.headers.get('content-length') || 0);
+  const size = res.type === 'opaque' ? 30000 : len || 30000;
+  await cache.put(key, res);
+  await idb('readwrite', (st) => st.put({ t: Date.now(), s: size, c: cls }, key)).catch(() => {});
+  if (++puts % 40 === 0) prune().catch(() => {});
+}
+async function cached(request, url, cls) {
+  const cache = await caches.open(DATA_CACHE);
+  const key = keyOf(url, cls);
+  let hit = await cache.match(key);
+  if (hit && hit.type === 'opaque' && request.mode === 'cors') hit = undefined; // an <img> copy can't serve a CORS fetch
+  const meta = hit ? await idb('readonly', (st) => st.get(key)).catch(() => null) : null;
+  const fresh = hit && meta && Date.now() - meta.t < TTL[cls];
+  const net = () => fetch(request).then((res) => {
+    if (res && (res.status === 200 || res.type === 'opaque')) save(cache, key, res.clone(), cls).catch(() => {});
+    return res;
+  });
+  if (cls === 'frame' || cls === 'model') {
+    if (fresh) return hit;
+    return net().catch(() => hit || Response.error());
+  }
+  // base + meta: saved copy first, refresh in the background (always for meta, after a day for base)
+  if (hit) {
+    if (cls === 'meta' || !meta || Date.now() - meta.t > 86400e3) net().catch(() => {});
+    return hit;
+  }
+  return net();
+}
+async function prune() {
+  const cache = await caches.open(DATA_CACHE);
+  const all = await idb('readonly', (st) => { const out = []; const r = st.openCursor(); r.onsuccess = () => { const c = r.result; if (c) { out.push([c.key, c.value]); c.continue(); } }; return { get result() { return out; } }; });
+  const now = Date.now(); let total = 0; const keep = [];
+  for (const [k, v] of all) {
+    if (now - v.t > TTL[v.c] * (v.c === 'base' ? 1 : 2)) { await cache.delete(k); await idb('readwrite', (st) => st.delete(k)); }
+    else { keep.push([k, v]); total += v.s; }
+  }
+  if (total <= CAP_BYTES) return;
+  keep.sort((a, b) => a[1].t - b[1].t);
+  for (const [k, v] of keep) {
+    if (total <= CAP_BYTES * 0.85) break;
+    await cache.delete(k); await idb('readwrite', (st) => st.delete(k)); total -= v.s;
+  }
+}
+// Whole-world basemap at zoom 0-2 (21 tiles, what one globe view loads anyway) saved once a month, so the map
+// and globe paint instantly and offline. Kept small on purpose: OpenStreetMap's tile policy forbids bulk pre-seeding;
+// deeper zooms are saved as you view them.
+async function warmBaseTiles() {
+  const cache = await caches.open(DATA_CACHE);
+  for (let z = 0; z <= 2; z++) for (let x = 0; x < 1 << z; x++) for (let y = 0; y < 1 << z; y++) {
+    const u = `https://tile.openstreetmap.org/${z}/${x}/${y}.png`;
+    if (await cache.match(u)) continue;
+    try { const res = await fetch(u, { mode: 'cors', credentials: 'omit' }); if (!res.ok) continue; await save(cache, u, res, 'base'); } catch {}
+  }
+}
