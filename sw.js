@@ -4,7 +4,7 @@
  * Note: iOS Safari (iOS 16.4+) requires the PWA to be installed (Added to Home Screen) to receive Web Notifications.
  */
 
-const CACHE_VERSION = 'radar-shell-v20261029-pollen2';
+const CACHE_VERSION = 'radar-shell-v20261030-sky25';
 const TILE_CACHE_NAME = 'radar-tiles-v1';
 const WIKI_CACHE_NAME = 'sky-wiki-v1';
 // sky22: one persistent on-phone cache for map/satellite/model tiles, oldest out first.
