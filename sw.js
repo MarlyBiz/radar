@@ -4,14 +4,16 @@
  * Note: iOS Safari (iOS 16.4+) requires the PWA to be installed (Added to Home Screen) to receive Web Notifications.
  */
 
-const CACHE_VERSION = 'radar-shell-v20261026-sky23';
+const CACHE_VERSION = 'radar-shell-v20261029-sky24';
 const TILE_CACHE_NAME = 'radar-tiles-v1';
 const WIKI_CACHE_NAME = 'sky-wiki-v1';
-// sky22: one persistent on-phone cache for map/satellite/model tiles, ~25 MB cap, oldest out first.
+// sky22: one persistent on-phone cache for map/satellite/model tiles, oldest out first.
 // Per-entry time/size/class live in IndexedDB (opaque tile responses can't carry headers).
+// sky24: cap 180 MB (was 25), radar/satellite frames (keyed by their frame time/id) evicted after 3 h, basemap
+// kept 30 days; "current"/"latest" radar tiles are network-first (2 min) so they can never show an old scan.
 const DATA_CACHE = 'heaven-data-v1';
-const CAP_BYTES = 25 * 1024 * 1024;
-const TTL = { base: 30 * 86400e3, frame: 3 * 3600e3, model: 12 * 3600e3, meta: 6 * 3600e3 }; // Star View detail sheet: Wikipedia articles (offline reopen)
+const CAP_BYTES = 180 * 1024 * 1024;
+const TTL = { base: 30 * 86400e3, frame: 3 * 3600e3, model: 12 * 3600e3, meta: 6 * 3600e3, live: 2 * 60e3 }; // Star View detail sheet: Wikipedia articles (offline reopen)
 
 // All paths are resolved against the SW scope, so the app works under a sub-path
 // (https://marlybiz.github.io/radar/) and on a custom domain root alike.
@@ -286,12 +288,21 @@ function classify(u) {
   if (h === 'gibs.earthdata.nasa.gov' && p.includes('VIIRS_Black_Marble')) return 'base';
   if (h === 'marlybiz.github.io' && p.startsWith('/heaven-gfs/')) return p.endsWith('meta.json') ? 'meta' : 'model';
   if (h.endsWith('rainviewer.com') && p.includes('/v2/radar/')) return 'frame';
-  if (h === 'push.marlylabs.app' && p.startsWith('/radar/')) return 'frame';
+  if (h === 'push.marlylabs.app' && p.startsWith('/radar/')) return /\/(current|latest)\.png$/.test(p) ? 'live' : /\/\d{12}\.png$|\/[0-9a-f]{6,24}\.png$/.test(p) ? 'frame' : null;
+  // sky24: direct radar fallbacks that carry an explicit scan time
+  if (h === 'opengeo.ncep.noaa.gov' && /request=GetMap/i.test(u.search) && /[?&]TIME=/i.test(u.search)) return 'frame';
+  if (h === 'geo.weather.gc.ca' && /request=GetMap/i.test(u.search) && /[?&]TIME=/i.test(u.search)) return 'frame';
+  if (h === 'mesonet.agron.iastate.edu' && /USCOMP-N0Q-\d{12}\//.test(p)) return 'frame';
   if (h === 'gibs.earthdata.nasa.gov' && /\/\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\//.test(p)) return 'frame';
   if ((h === 'nowcoast.noaa.gov' || h === 'view.eumetsat.int') && /request=GetMap/i.test(u.search) && /time=/i.test(u.search)) return 'frame';
   return null;
 }
-const keyOf = (u, cls) => (cls === 'meta' ? u.origin + u.pathname : u.href);
+// sky24: the Worker's per-session ?s= counter param is not part of the key, so a frame tile is saved once for every session
+const keyOf = (u, cls) => {
+  if (cls === 'meta') return u.origin + u.pathname;
+  if (u.hostname === 'push.marlylabs.app') { const c = new URL(u.href); c.searchParams.delete('s'); return c.href; }
+  return u.href;
+};
 let dbP = null;
 function db() {
   if (!dbP) dbP = new Promise((res, rej) => { const r = indexedDB.open('heaven-sw', 1); r.onupgradeneeded = () => r.result.createObjectStore('meta'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
@@ -299,12 +310,15 @@ function db() {
 }
 const idb = (mode, fn) => db().then((d) => new Promise((res, rej) => { const tx = d.transaction('meta', mode); const st = tx.objectStore('meta'); const out = fn(st); tx.oncomplete = () => res(out && out.result !== undefined ? out.result : out); tx.onerror = () => rej(tx.error); }));
 let puts = 0;
+let lastPrune = 0;
 async function save(cache, key, res, cls) {
   const len = +(res.headers.get('content-length') || 0);
-  const size = res.type === 'opaque' ? 30000 : len || 30000;
+  let size = res.type === 'opaque' ? 30000 : len;
+  if (!size) { try { size = (await res.clone().blob()).size || 30000; } catch { size = 30000; } }
   await cache.put(key, res);
   await idb('readwrite', (st) => st.put({ t: Date.now(), s: size, c: cls }, key)).catch(() => {});
-  if (++puts % 40 === 0) prune().catch(() => {});
+  // prune at most once a minute (the metadata scan grows with the 180 MB cap)
+  if (++puts % 100 === 0 && Date.now() - lastPrune > 60e3) { lastPrune = Date.now(); prune().catch(() => {}); }
 }
 async function cached(request, url, cls) {
   const cache = await caches.open(DATA_CACHE);
@@ -317,10 +331,11 @@ async function cached(request, url, cls) {
     if (res && (res.status === 200 || res.type === 'opaque')) save(cache, key, res.clone(), cls).catch(() => {});
     return res;
   });
-  if (cls === 'frame' || cls === 'model') {
+  if (cls === 'frame' || cls === 'model' || (cls === 'live' && fresh)) {
     if (fresh) return hit;
     return net().catch(() => hit || Response.error());
   }
+  if (cls === 'live') return net().catch(() => hit || Response.error()); // newest scan: network first, saved copy offline
   // base + meta: saved copy first, refresh in the background (always for meta, after a day for base)
   if (hit) {
     if (cls === 'meta' || !meta || Date.now() - meta.t > 86400e3) net().catch(() => {});
@@ -333,7 +348,7 @@ async function prune() {
   const all = await idb('readonly', (st) => { const out = []; const r = st.openCursor(); r.onsuccess = () => { const c = r.result; if (c) { out.push([c.key, c.value]); c.continue(); } }; return { get result() { return out; } }; });
   const now = Date.now(); let total = 0; const keep = [];
   for (const [k, v] of all) {
-    if (now - v.t > TTL[v.c] * (v.c === 'base' ? 1 : 2)) { await cache.delete(k); await idb('readwrite', (st) => st.delete(k)); }
+    if (now - v.t > (TTL[v.c] || TTL.frame) * (v.c === 'model' || v.c === 'meta' ? 2 : v.c === 'live' ? 30 : 1)) { await cache.delete(k); await idb('readwrite', (st) => st.delete(k)); }
     else { keep.push([k, v]); total += v.s; }
   }
   if (total <= CAP_BYTES) return;
